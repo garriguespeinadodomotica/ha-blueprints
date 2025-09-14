@@ -1,0 +1,165 @@
+blueprint:
+  name: Exponer helper Light por MQTT (genérico, JSON)
+  description: >
+    Controla un helper/grupo de luces desde MQTT con payload JSON y publica su estado.
+    Ejemplo de comando: {"state":"ON","brightness":170}
+  domain: automation
+  input:
+    target_light:
+      name: Luz/grupo (helper) a exponer
+      selector:
+        entity:
+          domain: light
+    cmd_topic:
+      name: Topic de comandos (JSON)
+      description: "Ej.: /homeassistant/light/grupo_luces_dormitorio_1/set"
+      selector:
+        text:
+    state_topic:
+      name: Topic de estado (JSON)
+      description: "Si lo dejas vacío, usa el de comandos cambiando /set por /state"
+      default: ""
+      selector:
+        text:
+    qos:
+      name: QoS MQTT
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 1
+    retain:
+      name: Retain en estado
+      default: false
+      selector:
+        boolean: {}
+    allow_toggle:
+      name: Permitir TOGGLE
+      default: true
+      selector:
+        boolean: {}
+    support_brightness:
+      name: Aceptar brightness
+      default: true
+      selector:
+        boolean: {}
+    support_color_temp:
+      name: Aceptar color_temp
+      default: true
+      selector:
+        boolean: {}
+    support_rgb:
+      name: Aceptar color.rgb [r,g,b]
+      default: true
+      selector:
+        boolean: {}
+    support_hs:
+      name: Aceptar hs_color
+      default: false
+      selector:
+        boolean: {}
+    support_xy:
+      name: Aceptar xy_color
+      default: false
+      selector:
+        boolean: {}
+
+mode: queued
+max: 10
+
+variables:
+  ent: !input target_light
+  cmd_t: !input cmd_topic
+  st_t_provided: !input state_topic
+  st_t: >-
+    {% set s = st_t_provided %}
+    {% if not s or s == '' %}
+      {{ (cmd_t | replace('/set','/state')) }}
+    {% else %}
+      {{ s }}
+    {% endif %}
+  q: !input qos
+  r: !input retain
+  allow_t: !input allow_toggle
+  sup_bri: !input support_brightness
+  sup_ct: !input support_color_temp
+  sup_rgb: !input support_rgb
+  sup_hs: !input support_hs
+  sup_xy: !input support_xy
+
+trigger:
+  # 1) Comandos desde MQTT
+  - id: mqtt_cmd
+    platform: mqtt
+    topic: !input cmd_topic
+    qos: !input qos
+
+  # 2) Cambios de estado del helper → publicar a MQTT
+  - id: state_change
+    platform: state
+    entity_id: !input target_light
+
+action:
+  - choose:
+
+      # --- Rama: comando MQTT entrante ---
+      - conditions: "{{ trigger.id == 'mqtt_cmd' }}"
+        sequence:
+          - variables:
+              p: "{{ trigger.payload_json }}"
+              st: "{{ (trigger.payload_json.state | default('')) | upper }}"
+          - choose:
+              - conditions: "{{ st == 'ON' }}"
+                sequence:
+                  - service: light.turn_on
+                    target: { entity_id: "{{ ent }}" }
+                    data:
+                      brightness: >-
+                        {% if p.brightness is defined and sup_bri %}{{ p.brightness | int }}{% else %}{{ omit }}{% endif %}
+                      color_temp: >-
+                        {% if p.color_temp is defined and sup_ct %}{{ p.color_temp | int }}{% else %}{{ omit }}{% endif %}
+                      rgb_color: >-
+                        {% if p.color is defined and p.color.rgb is defined and sup_rgb %}{{ p.color.rgb }}{% else %}{{ omit }}{% endif %}
+                      hs_color: >-
+                        {% if p.hs_color is defined and sup_hs %}{{ p.hs_color }}{% else %}{{ omit }}{% endif %}
+                      xy_color: >-
+                        {% if p.xy_color is defined and sup_xy %}{{ p.xy_color }}{% else %}{{ omit }}{% endif %}
+                      transition: >-
+                        {% if p.transition is defined %}{{ p.transition | float }}{% else %}{{ omit }}{% endif %}
+              - conditions: "{{ st == 'OFF' }}"
+                sequence:
+                  - service: light.turn_off
+                    target: { entity_id: "{{ ent }}" }
+                    data:
+                      transition: >-
+                        {% if p.transition is defined %}{{ p.transition | float }}{% else %}{{ omit }}{% endif %}
+              - conditions: "{{ st == 'TOGGLE' and allow_t }}"
+                sequence:
+                  - service: light.toggle
+                    target: { entity_id: "{{ ent }}" }
+
+      # --- Rama: cambio de estado del helper → publicar JSON ---
+      - conditions: "{{ trigger.id == 'state_change' }}"
+        sequence:
+          - variables:
+              cur_state: "{{ states(ent) | upper }}"
+              br: "{{ state_attr(ent, 'brightness') }}"
+              ct: "{{ state_attr(ent, 'color_temp') }}"
+              hs: "{{ state_attr(ent, 'hs_color') }}"
+              rgb: "{{ state_attr(ent, 'rgb_color') }}"
+              rgbw: "{{ state_attr(ent, 'rgbw_color') }}"
+              xy: "{{ state_attr(ent, 'xy_color') }}"
+              rgb_final: >-
+                {% if rgb is not none %}{{ rgb }}
+                {% elif rgbw is not none %}{{ (rgbw | list)[:3] }}
+                {% else %}{{ none }}{% endif %}
+          - service: mqtt.publish
+            data:
+              topic: "{{ st_t }}"
+              qos: "{{ q }}"
+              retain: "{{ r }}"
+              payload: >-
+                {
+                  "state": "{{ cur_state }}"{% if br is not none %}, "brightness": {{ br }}{% endif %}{% if ct is not none %}, "color_temp": {{ ct }}{% endif %}{% if hs is not none %}, "hs_color": {{ hs }}{% endif %}{% if rgb_final is not none %}, "color": { "rgb": {{ rgb_final }} }{% endif %}{% if xy is not none %}, "xy_color": {{ xy }}{% endif %}
+                }
