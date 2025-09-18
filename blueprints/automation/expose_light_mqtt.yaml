@@ -1,8 +1,9 @@
 blueprint:
-  name: Exponer helper Light por MQTT (robusto, JSON)
+  name: Exponer helper Light por MQTT (robusto, JSON, fix transition)
   description: >
     Controla un helper/grupo de luces desde MQTT con payload JSON y publica su estado.
-    Prioridad color: rgb > hs > xy > color_temp. Hace cast seguro de números y omite claves inválidas.
+    Prioridad color: rgb > hs > xy > color_temp.
+    Corrige error de transition (solo float válido).
   domain: automation
   input:
     target_light:
@@ -138,17 +139,14 @@ action:
                   - service: light.turn_on
                     target: { entity_id: "{{ ent }}" }
                     data:
-                      # brillo solo si es válido 1..255
                       brightness: >-
                         {% if b_val is number and 1 <= b_val <= 255 and sup_bri %}
                           {{ b_val }}
                         {% else %} {{ omit }} {% endif %}
-                      # transición solo si viene numérica
                       transition: >-
                         {% if t_val is number and t_val >= 0 %}
                           {{ t_val }}
                         {% else %} {{ omit }} {% endif %}
-                      # pasar SOLO un descriptor de color
                       rgb_color: "{{ rgb_sel if color_mode == 'rgb' else omit }}"
                       hs_color: "{{ hs_sel if color_mode == 'hs' else omit }}"
                       xy_color: "{{ xy_sel if color_mode == 'xy' else omit }}"
