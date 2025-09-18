@@ -1,9 +1,9 @@
 blueprint:
-  name: Exponer helper Light por MQTT (robusto, JSON, fix transition)
+  name: Exponer helper Light por MQTT (robusto, JSON, dict seguro)
   description: >
     Controla un helper/grupo de luces desde MQTT con payload JSON y publica su estado.
     Prioridad color: rgb > hs > xy > color_temp.
-    Corrige error de transition (solo float válido).
+    Usa diccionarios dinámicos para evitar errores de tipo (brightness, transition, color...).
   domain: automation
   input:
     target_light:
@@ -40,31 +40,6 @@ blueprint:
       default: true
       selector:
         boolean: {}
-    support_brightness:
-      name: Aceptar brightness
-      default: true
-      selector:
-        boolean: {}
-    support_color_temp:
-      name: Aceptar color_temp
-      default: true
-      selector:
-        boolean: {}
-    support_rgb:
-      name: Aceptar color.rgb [r,g,b]
-      default: true
-      selector:
-        boolean: {}
-    support_hs:
-      name: Aceptar hs_color
-      default: true
-      selector:
-        boolean: {}
-    support_xy:
-      name: Aceptar xy_color
-      default: true
-      selector:
-        boolean: {}
 
 mode: queued
 max: 10
@@ -83,11 +58,6 @@ variables:
   q: !input qos
   r: !input retain
   allow_t: !input allow_toggle
-  sup_bri: !input support_brightness
-  sup_ct: !input support_color_temp
-  sup_rgb: !input support_rgb
-  sup_hs: !input support_hs
-  sup_xy: !input support_xy
 
 trigger:
   - id: mqtt_cmd
@@ -108,21 +78,15 @@ action:
           - variables:
               p: "{{ trigger.payload_json }}"
               st: "{{ (p.state | default('')) | upper }}"
-              # normalización segura de números
-              t_val: >-
-                {% if p.transition is defined %}
-                  {{ p.transition | float(0) }}
-                {% else %} {{ none }} {% endif %}
-              b_val: >-
-                {% if p.brightness is defined %}
-                  {{ (p.brightness | int(0)) }}
-                {% else %} {{ none }} {% endif %}
-              # detectar color descriptors presentes
-              has_rgb: "{{ p.color is defined and p.color.rgb is defined and sup_rgb }}"
-              has_hs: "{{ p.hs_color is defined and sup_hs }}"
-              has_xy: "{{ p.xy_color is defined and sup_xy }}"
-              has_ct: "{{ p.color_temp is defined and sup_ct }}"
-              # elegir UNO por prioridad: rgb > hs > xy > ct
+              # valores convertidos seguros
+              b_val: "{{ (p.brightness | int(0)) if p.brightness is defined else none }}"
+              t_val: "{{ (p.transition | float(0)) if p.transition is defined else none }}"
+              # detectar colores válidos
+              has_rgb: "{{ p.color is defined and p.color.rgb is defined }}"
+              has_hs: "{{ p.hs_color is defined }}"
+              has_xy: "{{ p.xy_color is defined }}"
+              has_ct: "{{ p.color_temp is defined }}"
+              # elegir UNO
               color_mode: >-
                 {% if has_rgb %}rgb
                 {% elif has_hs %}hs
@@ -137,35 +101,33 @@ action:
               - conditions: "{{ st == 'ON' }}"
                 sequence:
                   - service: light.turn_on
-                    target: { entity_id: "{{ ent }}" }
-                    data:
-                      brightness: >-
-                        {% if b_val is number and 1 <= b_val <= 255 and sup_bri %}
-                          {{ b_val }}
-                        {% else %} {{ omit }} {% endif %}
-                      transition: >-
-                        {% if t_val is number and t_val >= 0 %}
-                          {{ t_val }}
-                        {% else %} {{ omit }} {% endif %}
-                      rgb_color: "{{ rgb_sel if color_mode == 'rgb' else omit }}"
-                      hs_color: "{{ hs_sel if color_mode == 'hs' else omit }}"
-                      xy_color: "{{ xy_sel if color_mode == 'xy' else omit }}"
-                      color_temp: "{{ ct_sel if color_mode == 'ct' else omit }}"
+                    target: 
+                      entity_id: "{{ ent }}"
+                    data: >-
+                      {% set d = dict() %}
+                      {% if b_val is number and b_val > 0 %}{% set _ = d.update({'brightness': b_val}) %}{% endif %}
+                      {% if t_val is number and t_val >= 0 %}{% set _ = d.update({'transition': t_val}) %}{% endif %}
+                      {% if rgb_sel is not none %}{% set _ = d.update({'rgb_color': rgb_sel}) %}{% endif %}
+                      {% if hs_sel is not none %}{% set _ = d.update({'hs_color': hs_sel}) %}{% endif %}
+                      {% if xy_sel is not none %}{% set _ = d.update({'xy_color': xy_sel}) %}{% endif %}
+                      {% if ct_sel is not none %}{% set _ = d.update({'color_temp': ct_sel}) %}{% endif %}
+                      {{ d }}
 
               - conditions: "{{ st == 'OFF' }}"
                 sequence:
                   - service: light.turn_off
-                    target: { entity_id: "{{ ent }}" }
-                    data:
-                      transition: >-
-                        {% if t_val is number and t_val >= 0 %}
-                          {{ t_val }}
-                        {% else %} {{ omit }} {% endif %}
+                    target: 
+                      entity_id: "{{ ent }}"
+                    data: >-
+                      {% set d = dict() %}
+                      {% if t_val is number and t_val >= 0 %}{% set _ = d.update({'transition': t_val}) %}{% endif %}
+                      {{ d }}
 
               - conditions: "{{ st == 'TOGGLE' and allow_t }}"
                 sequence:
                   - service: light.toggle
-                    target: { entity_id: "{{ ent }}" }
+                    target: 
+                      entity_id: "{{ ent }}"
 
       # ===== Rama: cambio de estado del helper → publicar JSON =====
       - conditions: "{{ trigger.id == 'state_change' }}"
